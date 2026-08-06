@@ -40,9 +40,13 @@ DATE = re.compile(r'(20\d\d-\d\d-\d\d)')
 def field(body, *names):
     """■ 필드명: 값  형태에서 값을 뽑는다. 다음 ■ 또는 빈 줄 전까지."""
     for name in names:
+        # 표기 변형을 모두 흡수한다:
+        #   ■ 대본: …            ■ 대본 (375자): …
+        #   **■ 대본 (약 390자):**  ← ■ 앞에 볼드가 오고 콜론이 볼드 안에 있는 형식
         pat = re.compile(
-            r'^■\s*\**\s*' + re.escape(name) + r'\s*\**\s*[:：]\s*(.*?)'
-            r'(?=^■|^\*\*[^\n]*\*\*\s*$|^---|\Z)', re.M | re.S)
+            r'^\**\s*■\s*\**\s*' + re.escape(name) +
+            r'\s*(?:\([^)\n]*\))?\s*\**\s*[:：]\s*\**\s*(.*?)'
+            r'(?=^\**\s*■|^\*\*[^\n]*\*\*\s*$|^---|\Z)', re.M | re.S)
         m = pat.search(body)
         if m:
             v = m.group(1).strip()
@@ -52,7 +56,7 @@ def field(body, *names):
 
 
 HEADLINE3 = re.compile(
-    r'^\**[★\s]*후킹 헤드라인 3개[^\n]*\n(.*?)(?=^\**[★\s]*(?:대본|점수|사유|운영자|보강)|^■|^---|\Z)',
+    r'^\**[★\s]*(?:후킹 )?헤드라인 3개[^\n]*\n(.*?)(?=^\**[★\s]*(?:대본|점수|사유|운영자|보강)|^\**\s*■|^---|\Z)',
     re.M | re.S)
 
 
@@ -223,9 +227,28 @@ def main():
         e['headlines'] = headlines3(e['body'])
         e['hook'] = field(e['body'], '첫 3초 후킹 문장', '첫 3초 후킹')
         e['title'] = field(e['body'], '제목(헤드라인)', '제목', '제목(후보)')
-        e['script'] = field(e['body'], '대본 (약 300자)', '대본', '대본 (200~400자)')
+        # 초기 회차에는 「후킹 헤드라인 3개」 블록 없이 제목 + 대체 헤드라인 2개만 있다.
+        # 프롬프트 D-5는 적합에 헤드라인 3개를 요구하므로, 그 두 필드로 대체 구성하고
+        # 원본에 3개 블록이 없었다는 사실을 따로 표시한다.
+        e['headlines_synth'] = False
+        if not e['headlines']:
+            alt = field(e['body'], '대체 헤드라인 2개', '대체 헤드라인')
+            parts = []
+            if e['title']:
+                parts.append(e['title'].split('\n')[0].strip())
+            for chunk in re.split(r'\s*/\s*|\n', alt):
+                chunk = re.sub(r'^\**\s*(?:\d+[.)]|[-*•])\s*', '', chunk).strip()
+                chunk = chunk.strip('*').strip().strip('"').strip('"').strip('"')
+                if chunk:
+                    parts.append(chunk)
+            if parts:
+                e['headlines'] = parts[:3]
+                e['headlines_synth'] = True
+        e['script'] = field(e['body'], '대본', '대본 초안')
         if not e['script']:
-            m = re.search(r'^■\s*\**\s*대본[^\n]*[:：]?\s*\n(.*?)(?=^■|\Z)',
+            # 「**대본 초안:**」 뒤에 ■ 없이 본문이 바로 오는 초기 회차 형식
+            m = re.search(r'^\**\s*대본[^\n]{0,12}\**\s*[:：]\**\s*\n+(.*?)'
+                          r'(?=^■|^\**\s*(?:점수|사유|보강|운영자)|^---|\Z)',
                           e['body'], re.M | re.S)
             e['script'] = m.group(1).strip() if m else ''
         e['numbers'] = field(e['body'], '사용한 핵심 수치', '핵심 수치')
@@ -364,7 +387,9 @@ def main():
                 w('  (대본을 버리라는 뜻이 아니라, 같은 브랜드로 후속편을 기대하지 말라는 뜻이다.)')
             w('')
             if e['headlines']:
-                w('**후킹 헤드라인**')
+                w('**후킹 헤드라인**%s' % (
+                    ' — ⓘ 원문에 「헤드라인 3개」 블록이 없어 제목·대체 헤드라인으로 대체 구성'
+                    if e['headlines_synth'] else ''))
                 w('')
                 for i, h in enumerate(e['headlines'], 1):
                     w('%d. %s' % (i, h))
